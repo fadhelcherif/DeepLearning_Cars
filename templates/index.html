@@ -34,7 +34,7 @@
                 <ol>
                     {% for item in results %}
                     <li>
-                        <span class="label">Pick {{ item.pick }}: {{ item.label }}</span>
+                        <span class="label">Pick {{ item.pick }}: {{ item.label }} ({{ item.confidence }}%)</span>
                         <span class="price">
                             {% if item.price is not none %}
                                 {{ item.currency }} {{ item.price }}
