@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Large model checkpoints (host externally)
+*.pth
+*.pt
+
+# Runtime uploads
+static/uploads/*
+!static/uploads/.gitkeep
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
