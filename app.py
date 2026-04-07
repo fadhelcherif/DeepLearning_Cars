@@ -46,6 +46,71 @@ _SHEETS_CACHE_ITEMS: List[Dict[str, Any]] = []
 _SHEETS_CACHE_AT: float = 0.0
 
 
+def _write_response_to_file(response: requests.Response, output_path: Path) -> int:
+    bytes_written = 0
+    with output_path.open("wb") as file_obj:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            file_obj.write(chunk)
+            bytes_written += len(chunk)
+    return bytes_written
+
+
+def _extract_drive_confirm_token(html: str) -> str:
+    patterns = [
+        r'name="confirm"\s+value="([^"]+)"',
+        r"confirm=([0-9A-Za-z_]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _download_model_file(model_url: str, output_path: Path) -> int:
+    parsed = urlparse(model_url)
+    is_drive = "drive.google.com" in parsed.netloc.lower()
+
+    with requests.Session() as session:
+        response = session.get(
+            model_url,
+            stream=True,
+            timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if is_drive and "text/html" in content_type:
+            html = response.text
+            confirm_token = _extract_drive_confirm_token(html)
+            if not confirm_token:
+                for cookie_key, cookie_value in session.cookies.items():
+                    if cookie_key.startswith("download_warning"):
+                        confirm_token = cookie_value
+                        break
+
+            file_id = parse_qs(parsed.query).get("id", [""])[0]
+            if not confirm_token or not file_id:
+                raise RuntimeError(
+                    "Google Drive returned an HTML page instead of the model file. "
+                    "Ensure sharing is 'Anyone with the link' and the URL points to the file."
+                )
+
+            confirm_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={confirm_token}"
+            response = session.get(
+                confirm_url,
+                stream=True,
+                timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+
+        return _write_response_to_file(response, output_path)
+
+
 def _normalize_model_url(url: str) -> str:
     parsed = urlparse(url)
     if "drive.google.com" not in parsed.netloc.lower():
@@ -77,24 +142,15 @@ def ensure_model_available() -> Path:
 
     try:
         print(f"Model missing locally. Downloading from MODEL_URL to {MODEL_PATH} ...")
-        response = requests.get(
-            model_url,
-            stream=True,
-            timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        response.raise_for_status()
-
-        bytes_written = 0
-        with temp_path.open("wb") as file_obj:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                file_obj.write(chunk)
-                bytes_written += len(chunk)
+        bytes_written = _download_model_file(model_url, temp_path)
 
         if bytes_written == 0:
             raise RuntimeError("Downloaded model is empty. Check MODEL_URL permissions/link type.")
+
+        with temp_path.open("rb") as file_obj:
+            header = file_obj.read(64).strip().lower()
+        if header.startswith(b"<!doctype html") or header.startswith(b"<html"):
+            raise RuntimeError("Downloaded content is HTML, not a model file. Check MODEL_URL.")
 
         temp_path.replace(MODEL_PATH)
         print(f"Model downloaded successfully ({bytes_written} bytes).")
@@ -164,7 +220,10 @@ def load_model_and_labels() -> Tuple[torch.nn.Module, torch.device, transforms.C
     model_path = ensure_model_available()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(model_path, map_location="cpu")
+    try:
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(model_path, map_location="cpu")
     state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
 
     # Remove DataParallel prefix if present.
