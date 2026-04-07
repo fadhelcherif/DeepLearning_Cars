@@ -23,6 +23,8 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "car_model.pth"
+MODEL_URL = os.getenv("MODEL_URL", "").strip()
+MODEL_DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("MODEL_DOWNLOAD_TIMEOUT_SECONDS", "180"))
 UPLOAD_DIR = BASE_DIR / "static" / "uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 IMG_SIZE = 300
@@ -39,6 +41,65 @@ N8N_TIMEOUT_SECONDS = int(os.getenv("N8N_TIMEOUT_SECONDS", "15"))
 
 _SHEETS_CACHE_ITEMS: List[Dict[str, Any]] = []
 _SHEETS_CACHE_AT: float = 0.0
+
+
+def _normalize_model_url(url: str) -> str:
+    parsed = urlparse(url)
+    if "drive.google.com" not in parsed.netloc.lower():
+        return url
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) >= 3 and path_parts[0] == "file" and path_parts[1] == "d":
+        file_id = path_parts[2]
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    query = parse_qs(parsed.query)
+    if "id" in query and query["id"]:
+        return f"https://drive.google.com/uc?export=download&id={query['id'][0]}"
+
+    return url
+
+
+def ensure_model_available() -> Path:
+    if MODEL_PATH.exists():
+        return MODEL_PATH
+
+    if not MODEL_URL:
+        raise FileNotFoundError(
+            f"Model file was not found: {MODEL_PATH}. Set MODEL_URL to a direct download link for the checkpoint."
+        )
+
+    model_url = _normalize_model_url(MODEL_URL)
+    temp_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".download")
+
+    try:
+        print(f"Model missing locally. Downloading from MODEL_URL to {MODEL_PATH} ...")
+        response = requests.get(
+            model_url,
+            stream=True,
+            timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+
+        bytes_written = 0
+        with temp_path.open("wb") as file_obj:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                file_obj.write(chunk)
+                bytes_written += len(chunk)
+
+        if bytes_written == 0:
+            raise RuntimeError("Downloaded model is empty. Check MODEL_URL permissions/link type.")
+
+        temp_path.replace(MODEL_PATH)
+        print(f"Model downloaded successfully ({bytes_written} bytes).")
+        return MODEL_PATH
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
 
 
 def build_eval_transform() -> transforms.Compose:
@@ -97,11 +158,10 @@ def load_label_mapping(num_classes: int) -> Dict[int, str]:
 
 
 def load_model_and_labels() -> Tuple[torch.nn.Module, torch.device, transforms.Compose, Dict[int, str]]:
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file was not found: {MODEL_PATH}")
+    model_path = ensure_model_available()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(MODEL_PATH, map_location="cpu")
+    ckpt = torch.load(model_path, map_location="cpu")
     state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
 
     # Remove DataParallel prefix if present.
