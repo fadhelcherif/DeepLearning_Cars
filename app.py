@@ -742,5 +742,10 @@ def index():
     )
 
 
+@app.get("/health")
+def health() -> Tuple[Dict[str, str], int]:
+    return {"status": "ok"}, 200
+
+
 if __name__ == "__main__":
     app.run()
