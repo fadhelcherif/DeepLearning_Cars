@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from io import BytesIO
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -644,7 +644,19 @@ app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-model, device, eval_transform, idx_to_class = load_model_and_labels()
+_MODEL: Optional[torch.nn.Module] = None
+_DEVICE: Optional[torch.device] = None
+_EVAL_TRANSFORM: Optional[transforms.Compose] = None
+_IDX_TO_CLASS: Optional[Dict[int, str]] = None
+
+
+def get_runtime_model_objects() -> Tuple[torch.nn.Module, torch.device, transforms.Compose, Dict[int, str]]:
+    global _MODEL, _DEVICE, _EVAL_TRANSFORM, _IDX_TO_CLASS
+
+    if _MODEL is None or _DEVICE is None or _EVAL_TRANSFORM is None or _IDX_TO_CLASS is None:
+        _MODEL, _DEVICE, _EVAL_TRANSFORM, _IDX_TO_CLASS = load_model_and_labels()
+
+    return _MODEL, _DEVICE, _EVAL_TRANSFORM, _IDX_TO_CLASS
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -683,6 +695,7 @@ def index():
                 image = Image.open(save_path)
                 image_url = f"/static/uploads/{safe_name}"
 
+            model, device, eval_transform, idx_to_class = get_runtime_model_objects()
             raw_results = predict_topk(model, image, eval_transform, idx_to_class, device, k=3)
             labels = [label for label, _ in raw_results]
 
