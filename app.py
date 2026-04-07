@@ -73,6 +73,17 @@ def _download_model_file(model_url: str, output_path: Path) -> int:
     parsed = urlparse(model_url)
     is_drive = "drive.google.com" in parsed.netloc.lower()
 
+    if is_drive:
+        try:
+            import gdown
+
+            downloaded = gdown.download(url=model_url, output=str(output_path), quiet=True, fuzzy=True)
+            if downloaded and output_path.exists():
+                return output_path.stat().st_size
+        except Exception:
+            # Fall back to manual requests-based flow below.
+            pass
+
     with requests.Session() as session:
         response = session.get(
             model_url,
