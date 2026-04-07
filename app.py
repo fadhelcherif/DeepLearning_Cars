@@ -23,7 +23,10 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "car_model.pth"
-MODEL_URL = os.getenv("MODEL_URL", "").strip()
+MODEL_URL = os.getenv(
+    "MODEL_URL",
+    "https://drive.google.com/uc?export=download&id=12eykIqeRY23KQIVitJVxWfa37QwWXZLp",
+).strip()
 MODEL_DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("MODEL_DOWNLOAD_TIMEOUT_SECONDS", "180"))
 UPLOAD_DIR = BASE_DIR / "static" / "uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
