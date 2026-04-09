@@ -23,21 +23,15 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "car_model.pth"
-MODEL_URL = os.getenv(
-    "MODEL_URL",
-    "https://drive.google.com/uc?export=download&id=12eykIqeRY23KQIVitJVxWfa37QwWXZLp",
-).strip()
-MODEL_DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("MODEL_DOWNLOAD_TIMEOUT_SECONDS", "180"))
 UPLOAD_DIR = BASE_DIR / "static" / "uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 IMG_SIZE = 300
 DEFAULT_CURRENCY = "DT"
 SCRAPED_DATA_PATH = Path(os.getenv("SCRAPED_DATA_PATH", str(BASE_DIR / "cars_data.json")))
 SCRAPED_DATA_URL = os.getenv("SCRAPED_DATA_URL", "").strip()
-GOOGLE_SHEETS_CSV_URL = os.getenv(
-    "GOOGLE_SHEETS_CSV_URL",
-    "https://docs.google.com/spreadsheets/d/1xSv2tbqVddoh2ID78onbnjRjRQq46ThOsDEeHUc2a6I/edit?usp=sharing",
-).strip()
+GOOGLE_SHEETS_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/1xSv2tbqVddoh2ID78onbnjRjRQq46ThOsDEeHUc2a6I/edit?usp=sharing"
+)
 SHEETS_REFRESH_SECONDS = int(os.getenv("SHEETS_REFRESH_SECONDS", "300"))
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "").strip()
 N8N_TIMEOUT_SECONDS = int(os.getenv("N8N_TIMEOUT_SECONDS", "15"))
@@ -46,130 +40,13 @@ _SHEETS_CACHE_ITEMS: List[Dict[str, Any]] = []
 _SHEETS_CACHE_AT: float = 0.0
 
 
-def _write_response_to_file(response: requests.Response, output_path: Path) -> int:
-    bytes_written = 0
-    with output_path.open("wb") as file_obj:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if not chunk:
-                continue
-            file_obj.write(chunk)
-            bytes_written += len(chunk)
-    return bytes_written
-
-
-def _extract_drive_confirm_token(html: str) -> str:
-    patterns = [
-        r'name="confirm"\s+value="([^"]+)"',
-        r"confirm=([0-9A-Za-z_]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html)
-        if match:
-            return match.group(1)
-    return ""
-
-
-def _download_model_file(model_url: str, output_path: Path) -> int:
-    parsed = urlparse(model_url)
-    is_drive = "drive.google.com" in parsed.netloc.lower()
-
-    if is_drive:
-        try:
-            import gdown
-
-            downloaded = gdown.download(url=model_url, output=str(output_path), quiet=True, fuzzy=True)
-            if downloaded and output_path.exists():
-                return output_path.stat().st_size
-        except Exception:
-            # Fall back to manual requests-based flow below.
-            pass
-
-    with requests.Session() as session:
-        response = session.get(
-            model_url,
-            stream=True,
-            timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        response.raise_for_status()
-
-        content_type = response.headers.get("Content-Type", "").lower()
-        if is_drive and "text/html" in content_type:
-            html = response.text
-            confirm_token = _extract_drive_confirm_token(html)
-            if not confirm_token:
-                for cookie_key, cookie_value in session.cookies.items():
-                    if cookie_key.startswith("download_warning"):
-                        confirm_token = cookie_value
-                        break
-
-            file_id = parse_qs(parsed.query).get("id", [""])[0]
-            if not confirm_token or not file_id:
-                raise RuntimeError(
-                    "Google Drive returned an HTML page instead of the model file. "
-                    "Ensure sharing is 'Anyone with the link' and the URL points to the file."
-                )
-
-            confirm_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={confirm_token}"
-            response = session.get(
-                confirm_url,
-                stream=True,
-                timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            response.raise_for_status()
-
-        return _write_response_to_file(response, output_path)
-
-
-def _normalize_model_url(url: str) -> str:
-    parsed = urlparse(url)
-    if "drive.google.com" not in parsed.netloc.lower():
-        return url
-
-    path_parts = [part for part in parsed.path.split("/") if part]
-    if len(path_parts) >= 3 and path_parts[0] == "file" and path_parts[1] == "d":
-        file_id = path_parts[2]
-        return f"https://drive.google.com/uc?export=download&id={file_id}"
-
-    query = parse_qs(parsed.query)
-    if "id" in query and query["id"]:
-        return f"https://drive.google.com/uc?export=download&id={query['id'][0]}"
-
-    return url
-
-
 def ensure_model_available() -> Path:
     if MODEL_PATH.exists():
         return MODEL_PATH
 
-    if not MODEL_URL:
-        raise FileNotFoundError(
-            f"Model file was not found: {MODEL_PATH}. Set MODEL_URL to a direct download link for the checkpoint."
-        )
-
-    model_url = _normalize_model_url(MODEL_URL)
-    temp_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".download")
-
-    try:
-        print(f"Model missing locally. Downloading from MODEL_URL to {MODEL_PATH} ...")
-        bytes_written = _download_model_file(model_url, temp_path)
-
-        if bytes_written == 0:
-            raise RuntimeError("Downloaded model is empty. Check MODEL_URL permissions/link type.")
-
-        with temp_path.open("rb") as file_obj:
-            header = file_obj.read(64).strip().lower()
-        if header.startswith(b"<!doctype html") or header.startswith(b"<html"):
-            raise RuntimeError("Downloaded content is HTML, not a model file. Check MODEL_URL.")
-
-        temp_path.replace(MODEL_PATH)
-        print(f"Model downloaded successfully ({bytes_written} bytes).")
-        return MODEL_PATH
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+    raise FileNotFoundError(
+        f"Model file was not found: {MODEL_PATH}. Place car_model.pth in the project folder before starting the app."
+    )
 
 
 def build_eval_transform() -> transforms.Compose:
@@ -715,7 +592,7 @@ def index():
                 integration_warning = (
                     "Price data warning: "
                     + price_warning
-                    + " Configure GOOGLE_SHEETS_CSV_URL or use SCRAPED_DATA_URL/SCRAPED_DATA_PATH."
+                    + " Check the embedded Google Sheets URL or use SCRAPED_DATA_URL/SCRAPED_DATA_PATH."
                 )
 
             results = []

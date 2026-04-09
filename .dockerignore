@@ -5,5 +5,4 @@ __pycache__
 *.pyo
 *.pyd
 *.ipynb
-car_model.pth
 static/uploads

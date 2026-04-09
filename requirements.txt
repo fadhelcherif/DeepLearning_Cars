@@ -6,4 +6,3 @@ pillow
 datasets
 requests
 gunicorn
-gdown
