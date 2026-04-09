@@ -227,13 +227,6 @@ def load_label_mapping(num_classes: int) -> Dict[int, str]:
     return {i: f"class_{i}" for i in range(num_classes)}
 
 
-def _is_generic_label_mapping(idx_to_class: Dict[int, str]) -> bool:
-    if not idx_to_class:
-        return True
-    sample = [idx_to_class[k] for k in sorted(idx_to_class.keys())[: min(10, len(idx_to_class))]]
-    return all(isinstance(name, str) and name.startswith("class_") for name in sample)
-
-
 def load_model_and_labels() -> Tuple[torch.nn.Module, torch.device, transforms.Compose, Dict[int, str]]:
     model_path = ensure_model_available()
 
@@ -706,41 +699,17 @@ def index():
             raw_results = predict_topk(model, image, eval_transform, idx_to_class, device, k=3)
             labels = [label for label, _ in raw_results]
 
-            price_map, ordered_prices, price_warning = fetch_prices_from_n8n(labels)
+            price_map, ordered_prices, price_warning = fetch_prices_from_google_sheets(labels)
             if price_warning:
-                sheets_price_map, sheets_ordered_prices, sheets_warning = fetch_prices_from_google_sheets(labels)
-                if sheets_price_map or sheets_ordered_prices:
-                    price_map, ordered_prices = sheets_price_map, sheets_ordered_prices
-                    price_warning = "n8n failed, using Google Sheets fallback. " + price_warning
-                else:
-                    json_price_map, json_ordered_prices, json_warning = fetch_prices_from_json(labels)
-                    if json_price_map or json_ordered_prices:
-                        price_map, ordered_prices = json_price_map, json_ordered_prices
-                        base_warning = sheets_warning if sheets_warning else "Google Sheets unavailable."
-                        price_warning = (
-                            "n8n and Google Sheets failed, using JSON fallback. "
-                            + price_warning
-                            + " "
-                            + base_warning
-                        )
-                    elif json_warning:
-                        extra_warning = sheets_warning if sheets_warning else ""
-                        price_warning = (
-                            price_warning
-                            + (" " + extra_warning if extra_warning else "")
-                            + " JSON fallback also failed: "
-                            + json_warning
-                        )
-
-            if _is_generic_label_mapping(idx_to_class):
-                generic_warning = (
-                    "Class names are generic (class_#). Label metadata is unavailable right now. "
-                    "Predictions still run, but names are less readable."
-                )
-                if integration_warning:
-                    integration_warning = integration_warning + " " + generic_warning
-                else:
-                    integration_warning = generic_warning
+                json_price_map, json_ordered_prices, json_warning = fetch_prices_from_json(labels)
+                if json_price_map or json_ordered_prices:
+                    price_map, ordered_prices = json_price_map, json_ordered_prices
+                    price_warning = (
+                        "Google Sheets failed, using JSON fallback. "
+                        + price_warning
+                    )
+                elif json_warning:
+                    price_warning = price_warning + " JSON fallback also failed: " + json_warning
 
             if price_warning:
                 integration_warning = (
@@ -750,14 +719,13 @@ def index():
                 )
 
             results = []
-            for i, (label, confidence) in enumerate(raw_results, start=1):
+            for i, (label, _) in enumerate(raw_results, start=1):
                 price_info = _best_match_price(label, price_map)
 
                 results.append(
                     {
                         "pick": i,
                         "label": label,
-                        "confidence": round(confidence * 100.0, 2),
                         "price": price_info.get("price"),
                         "currency": price_info.get("currency", DEFAULT_CURRENCY),
                     }
@@ -780,4 +748,4 @@ def health() -> Tuple[Dict[str, str], int]:
 
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "7860")))
