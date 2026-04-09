@@ -4,8 +4,9 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Large model checkpoints (host externally)
-*.pth
 *.pt
+*.pth
+!car_model.pth
 
 # Runtime uploads
 static/uploads/*
