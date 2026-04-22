@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Car Brand Predictor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="shell">
+        <section class="card intro">
+            <h1>Car Brand Predictor</h1>
+            <p>Upload a car image or paste an image link to get top predictions instantly.</p>
+            <form method="POST" enctype="multipart/form-data" class="upload-form">
+                <input type="file" name="image" accept="image/png,image/jpeg,image/jpg,image/webp">
+                <input type="url" name="image_link" placeholder="Or paste an image URL (https://...)">
+                <button type="submit">Predict</button>
+            </form>
+            {% if error %}
+                <p class="error">{{ error }}</p>
+            {% endif %}
+            {% if integration_warning %}
+                <p class="warn">{{ integration_warning }}</p>
+            {% endif %}
+        </section>
+
+        {% if image_url and results %}
+        <section class="card result-grid">
+            <div class="preview">
+                <img src="{{ image_url }}" alt="Uploaded car image">
+            </div>
+            <div class="predictions">
+                <h2>Top Predictions</h2>
+                <ol>
+                    {% for item in results %}
+                    <li>
+                        <span class="label">Pick {{ item.pick }}: {{ item.label }}</span>
+                        <span class="price">
+                            {% if item.price is not none %}
+                                {{ item.currency }} {{ item.price }}
+                            {% else %}
+                                Price unavailable
+                            {% endif %}
+                        </span>
+                    </li>
+                    {% endfor %}
+                </ol>
+            </div>
+        </section>
+        {% endif %}
+    </main>
+</body>
+</html>

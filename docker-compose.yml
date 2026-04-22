@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: car-backend
+    environment:
+      PORT: 7860
+    expose:
+      - "7860"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: car-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
