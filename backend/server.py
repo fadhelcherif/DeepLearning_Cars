@@ -176,6 +176,53 @@ def predict_topk(
     return results
 
 
+def predict_topk_with_metrics(
+    model: torch.nn.Module,
+    image: Image.Image,
+    image_transform: transforms.Compose,
+    idx_to_class: Dict[int, str],
+    device: torch.device,
+    k: int = 3,
+    tta_runs: int = 0,
+    conf_threshold: float = 0.35,
+    entropy_threshold: Optional[float] = None,
+) -> Tuple[bool, float, float, List[Dict[str, object]]]:
+    """
+    Return (recognized, max_confidence, entropy, guesses)
+    guesses: list of {"class_id": int, "class_name": str, "probability": float}
+    """
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    with torch.inference_mode():
+        logits = model(image_transform(image).unsqueeze(0).to(device))
+
+        # Optional simple TTA: repeat with same transform if tta_runs>0
+        for _ in range(tta_runs):
+            aug = image_transform(image).unsqueeze(0).to(device)
+            logits = logits + model(aug)
+
+        logits = logits / (tta_runs + 1)
+        probs = torch.softmax(logits, dim=1)[0].cpu()
+
+    top_prob, top_idx = torch.topk(probs, k=min(k, probs.shape[0]))
+
+    # entropy
+    p = probs
+    entropy = -float((p * (p + 1e-12).log()).sum().item())
+    max_conf = float(top_prob[0].item())
+    accept_by_conf = max_conf >= conf_threshold
+    accept_by_entropy = True if entropy_threshold is None else entropy <= entropy_threshold
+    recognized = bool(accept_by_conf and accept_by_entropy)
+
+    guesses: List[Dict[str, object]] = []
+    for prob, idx in zip(top_prob.tolist(), top_idx.tolist()):
+        cls_id = int(idx)
+        guesses.append({"class_id": cls_id, "class_name": idx_to_class.get(cls_id, f"class_{cls_id}"), "probability": float(prob)})
+
+    return recognized, max_conf, entropy, guesses
+
+
 def _normalize_label(value: str) -> str:
     return " ".join(value.lower().strip().split())
 
@@ -543,12 +590,25 @@ def create_app() -> Flask:
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Preload model on app startup to avoid timeout on first request
+    with app.app_context():
+        try:
+            import sys
+            print("[STARTUP] Preloading model...", file=sys.stderr, flush=True)
+            get_runtime_model_objects()
+            print("[STARTUP] Model loaded successfully!", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[STARTUP] Warning: Failed to preload model: {e}", file=sys.stderr, flush=True)
+
     @app.route("/", methods=["GET", "POST"])
     def index() -> str:
         error = None
         results = None
         image_url = None
         integration_warning = None
+        recognized = None
+        max_confidence = None
+        entropy = None
 
         if request.method == "POST":
             try:
@@ -580,8 +640,29 @@ def create_app() -> Flask:
                     image_url = f"/static/uploads/{safe_name}"
 
                 model, device, eval_transform, idx_to_class = get_runtime_model_objects()
-                raw_results = predict_topk(model, image, eval_transform, idx_to_class, device, k=3)
-                labels = [label for label, _ in raw_results]
+                # Use OOD-aware prediction helper
+                CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
+                ENTROPY_THRESHOLD = None
+                TOP_K = 3
+                TTA_RUNS = int(os.getenv("TTA_RUNS", "0"))
+
+                recognized, max_conf, entropy, guesses = predict_topk_with_metrics(
+                    model=model,
+                    image=image,
+                    image_transform=eval_transform,
+                    idx_to_class=idx_to_class,
+                    device=device,
+                    k=TOP_K,
+                    tta_runs=TTA_RUNS,
+                    conf_threshold=CONFIDENCE_THRESHOLD,
+                    entropy_threshold=ENTROPY_THRESHOLD,
+                )
+
+                labels = [g["class_name"] for g in guesses]
+                # expose recognition metrics to template
+                recognized = recognized
+                max_confidence = max_conf
+                entropy = entropy
 
                 price_map, ordered_prices, price_warning = fetch_prices_from_google_sheets(labels)
                 if price_warning:
@@ -599,18 +680,34 @@ def create_app() -> Flask:
                         + " Check the embedded Google Sheets URL or use SCRAPED_DATA_URL/SCRAPED_DATA_PATH."
                     )
 
+                # Build results for template
                 results = []
-                for i, (label, _) in enumerate(raw_results, start=1):
+                for i, g in enumerate(guesses, start=1):
+                    label = g["class_name"]
                     price_info = _best_match_price(label, price_map)
-
                     results.append(
                         {
                             "pick": i,
                             "label": label,
+                            "confidence": round(float(g["probability"]), 4),
                             "price": price_info.get("price"),
                             "currency": price_info.get("currency", DEFAULT_CURRENCY),
                         }
                     )
+
+                # Save machine-friendly JSON for downstream use
+                try:
+                    out_json = {
+                        "recognized": recognized,
+                        "max_confidence": max_conf,
+                        "entropy": entropy,
+                        "guesses": guesses,
+                    }
+                    out_path = FRONTEND_DIR / "static" / "prediction_result.json"
+                    with out_path.open("w", encoding="utf-8") as fh:
+                        json.dump(out_json, fh, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
             except Exception as exc:
                 error = f"Prediction failed: {exc}"
 
@@ -620,7 +717,59 @@ def create_app() -> Flask:
             results=results,
             image_url=image_url,
             integration_warning=integration_warning,
+            recognized=recognized,
+            max_confidence=max_confidence,
+            entropy=entropy,
         )
+
+    @app.route("/api/predict", methods=["POST"])
+    def api_predict():
+        """API endpoint that returns JSON prediction with OOD handling.
+
+        Accepts multipart file under 'image' or JSON with 'image_link'.
+        """
+        try:
+            image = None
+            if request.files.get("image"):
+                file = request.files["image"]
+                image = Image.open(BytesIO(file.read()))
+            else:
+                body = request.get_json(silent=True) or {}
+                url = body.get("image_link") or request.form.get("image_link")
+                if url:
+                    resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+                    resp.raise_for_status()
+                    image = Image.open(BytesIO(resp.content))
+
+            if image is None:
+                return {"error": "No image provided"}, 400
+
+            model, device, eval_transform, idx_to_class = get_runtime_model_objects()
+            CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
+            ENTROPY_THRESHOLD = None
+            TOP_K = int(request.args.get("top_k", "3"))
+            TTA_RUNS = int(os.getenv("TTA_RUNS", "0"))
+
+            recognized, max_conf, entropy, guesses = predict_topk_with_metrics(
+                model=model,
+                image=image,
+                image_transform=eval_transform,
+                idx_to_class=idx_to_class,
+                device=device,
+                k=TOP_K,
+                tta_runs=TTA_RUNS,
+                conf_threshold=CONFIDENCE_THRESHOLD,
+                entropy_threshold=ENTROPY_THRESHOLD,
+            )
+
+            return {
+                "recognized": recognized,
+                "max_confidence": max_conf,
+                "entropy": entropy,
+                "guesses": guesses,
+            }, 200
+        except Exception as exc:
+            return {"error": str(exc)}, 500
 
     @app.get("/health")
     def health() -> Tuple[Dict[str, str], int]:

@@ -1,0 +1,22 @@
+{
+  "recognized": true,
+  "max_confidence": 0.5391674041748047,
+  "entropy": 2.7553036212921143,
+  "guesses": [
+    {
+      "class_id": 128,
+      "class_name": "Honda Accord Sedan 2012",
+      "probability": 0.5391674041748047
+    },
+    {
+      "class_id": 127,
+      "class_name": "Honda Accord Coupe 2012",
+      "probability": 0.03936786949634552
+    },
+    {
+      "class_id": 136,
+      "class_name": "Hyundai Genesis Sedan 2012",
+      "probability": 0.02642988972365856
+    }
+  ]
+}

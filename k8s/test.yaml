@@ -1,18 +1,15 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  # This creates a separate space for the test environment.
   name: test
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  # This runs the backend app in the test namespace.
   name: backend
   namespace: test
 spec:
-  # Only one backend pod for this environment.
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: backend
@@ -23,26 +20,20 @@ spec:
     spec:
       containers:
         - name: backend
-          # Backend image to run.
-          image: car-backend:latest
-          # Reuse the local image if it already exists.
+          image: gcr.io/deployementdl/car-backend:latest
           imagePullPolicy: IfNotPresent
           ports:
-            # Backend listens on this port.
             - containerPort: 7860
           env:
-            # Tell the app which port to use.
             - name: PORT
               value: "7860"
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  # This lets other pods talk to the backend.
   name: backend
   namespace: test
 spec:
-  # Internal service only.
   selector:
     app: backend
   ports:
@@ -52,12 +43,37 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  # This runs the frontend app in the test namespace.
   name: frontend
   namespace: test
 spec:
-  # Only one frontend pod for this environment.
-  replicas: 1
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: gcr.io/deployementdl/car-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: test
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
   selector:
     matchLabels:
       app: frontend
@@ -69,7 +85,7 @@ spec:
       containers:
         - name: frontend
           # Frontend image to run.
-          image: car-frontend:latest
+          image: gcr.io/deployementdl/car-frontend:latest
           # Reuse the local image if it already exists.
           imagePullPolicy: IfNotPresent
           ports:
